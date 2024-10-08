@@ -1,0 +1,2140 @@
+/*
+ TOYOSHIKI Tiny BASIC for Arduino
+ (C)2012 Tetsuya Suzuki
+ GNU General Public License
+
+ ch32V003用に　変更中です。
+ #010 エラーを無くします。
+ #define SIZE_LIST 512 //#010 List buffer size  256->512 ユーザープログラムの格納エリア
+
+ UART FIFOはありません！
+#011 送信する場合は　1データ送信後に、空になったら戻るようにしてください。    2024/0505
+    #012 c_putch()を　つくりかえました。   【gccとarduinoでは　charとintｇ違うため取りやめました　】
+
+ */
+//#if 0
+
+// #010 #include <Arduino.h>
+#include <stdlib.h>
+#include <ch32v00x_usart.h>     // #010
+
+// TOYOSHIKI TinyBASIC symbols
+// TO-DO Rewrite defined values to fit your machine as needed
+#define SIZE_LINE 80 //Command line buffer length + NULL
+#define SIZE_IBUF 80 //i-code conversion buffer size
+// #010 #define SIZE_LIST 256 //List buffer size
+#define SIZE_LIST 1024 //#010 List buffer size  256->512*2 ユーザープログラムの格納エリア
+//#define SIZE_LIST 1024+128  // ほぼ最大と思われる。　2024/0720
+#define SIZE_ARRY 32 //Array area size
+ #define SIZE_GSTK 6 //GOSUB stack size(2/nest)  //- #012 c_putch
+// #define SIZE_GSTK 9 //GOSUB stack size(2/nest)
+#define SIZE_LSTK 15 //FOR stack size(5/nest)
+
+// Depending on device functions
+// TO-DO Rewrite these functions to fit your machine
+//#define STR_EDITION "ARDUINO"
+#define STR_EDITION "ch32V003J4M6(DIP-8) 2024/0619" // #010
+#define _OUT_      // LED文を有効とするシンボルの定義、　LED文を不要な場合は　先頭に // をつければ良い。　#030
+// #031 OUT文で使う　ON,OFFをHIGH,LOW に　変更しました。　2024/0524
+#define _IN_
+#define _ADC_       // #050
+#define _PROG_      // #060　LOAD,SAVE,BOOT の追加した。動く。　2024/0524
+#define _TICK_      // #070 Systicを使用する。　0.1秒カウンターの値を読む。　ex.>B=TICK()
+#define _CLT_       // TICKカウンターを　クリアする（=0） にする。    #080 2024/0526
+//
+#ifdef _PROG_
+/*
+ *  プログラムを　フラッシュ領域に、SAVE（格納）、LOAD(読み出し）、BOOT（自起動）できるようにする。
+ *
+ *  フラッシュ１６Kのうち１３．７Kを使っているので、残は２．２Ｋで　１ｋ領域が２個使える。領域１，２と選択
+ *  できる。黙っていると領域１が選ばれる。
+ *  自動で起動できる｛BOOT]もある、　＞SAVE BOOT　のように使う。自分でLOAD 1 してRUNする。
+ *
+ *  フラッシュの操作は　MRSのサンプルの標準品を使った。
+ *  2024/0525
+ */
+#include "debug.h"      // for RISC-V
+ // #include    <EEPROM.h>  // for Arduino(STM32)
+//#define PAGE_WRITE_START_ADDR   ((uint32_t)0x08003000) /* Start from 12K */
+#define PAGE_WRITE_START_ADDR   ((uint32_t)0x08003800) /* Start from 14K */
+#define PAGE_WRITE_END_ADDR     ((uint32_t)0x08004000) /* End at 16K */
+#define FLASH_PAGE_SIZE         1024
+#define FLASH_PAGES_TO_BE_PROTECTED    FLASH_WRProt_Pages240to255
+
+/* Global Variable */
+volatile uint32_t   EraseCounter = 0x0;
+volatile uint32_t   Address = 0x0;
+volatile uint32_t   end_adr = 0x0;
+volatile uint32_t   prog_adr = 0x0;
+volatile uint16_t   Data = 0xAAAA;
+volatile uint32_t   WRPR_Value = 0xFFFFFFFF, ProtectedPages = 0x0;
+volatile uint32_t   NbrOfPage;
+volatile FLASH_Status FLASHStatus = FLASH_COMPLETE;
+// volatile TestStatus MemoryProgramStatus = PASSED;
+// volatile TestStatus MemoryEraseStatus = PASSED;
+
+#define SIZE_PROM   1024   // フラッシュの書き込みサイズ
+//
+void    prom_save(unsigned char *adr, unsigned char no) {
+    unsigned int    i;
+    //
+    FLASH_Unlock(); // ロックを外す。
+    // フラッフュの消去は1kbyteで行う。
+    FLASHStatus = FLASH_ErasePage(PAGE_WRITE_START_ADDR + (FLASH_PAGE_SIZE * no));
+    // 書き込みする。　２バイトづつなのだ。
+        Address = PAGE_WRITE_START_ADDR + (FLASH_PAGE_SIZE * no);
+        end_adr = Address + FLASH_PAGE_SIZE;
+        i = 0;
+        while((Address < end_adr ) && (FLASHStatus == FLASH_COMPLETE))  {
+            Data = ( adr[i + 1] << 8) + adr[i];
+            FLASHStatus = FLASH_ProgramHalfWord(Address, Data);
+            Address = Address + 2;
+            i = i + 2;
+        }
+    FLASH_Lock();
+}
+// プログラムをロードする関数。。。読み出します。
+void    prom_load(unsigned char *adr, unsigned char no) {
+ unsigned int    i;                  // ループカウンタ
+ char   *Address;
+     Address = (PAGE_WRITE_START_ADDR + (FLASH_PAGE_SIZE * no));
+    for ( i = 0; i < SIZE_LIST; i++)  {  // 領域のサイズだけ繰り返す
+        *adr = *Address;   // 読み込み
+        ++Address;
+        ++adr;
+    }
+}
+// BOOTの目印を返す　関数
+unsigned char prom_boot()   {
+char *boot;
+    boot = (PAGE_WRITE_START_ADDR + FLASH_PAGE_SIZE - 1);
+    // 領域番号０の末尾の値を持ち帰る
+    return( *boot );
+}
+#endif
+//
+#ifdef _IN_
+#if 0
+short getsw() {    // #040
+short i;
+  // i=30;
+   i=GPIOC->INDR; // Cポートの読み取り
+   i &= (1<<2);
+    return (i);
+}
+#endif
+//
+//     GPIO inport read 指定された端子の状態を返します。
+//
+short getsw_bit(short num) {    // #040 2024/0518 OK
+short   i;
+    switch(num) {
+        case 5: i=GPIOC->INDR; // PC1の読み取り
+                i=i>>1;
+                break;
+        case 6: i=GPIOC->INDR; // PC2の読み取り
+                i=i>>2;
+                break;
+        case 7: i=GPIOC->INDR; // PC4の読み取り
+                i=i>>4;
+                break;
+        case 8: i=GPIOC->INDR; // PC8の読み取り
+                i=i>>8;
+                break;
+        case 1: GPIOA->CFGLR=GPIOA->CFGLR & 0xffffff4f;
+                i=GPIOA->INDR; // PA1の読み取り
+                i=i>>1;
+                break;
+        case 3:  GPIOA->CFGLR=GPIOA->CFGLR & 0xfffff4ff;
+                i=GPIOA->INDR; // PA2の読み取り
+               i=i>>2;
+                break;
+        default:
+                break;
+    }
+    i &= 0x01;
+    return (i);
+}
+#endif
+
+#ifdef _ADC_
+//
+//     指定された ADC_chの値を返します。 1=AN1,2=Vss,3=AN0, 4=Vdd, 5=NoTP ,6=NoTP ,7=AN2,8=AN5
+//
+short getadc(short pin_num) {// #050
+  short   i;
+    switch(pin_num) {
+    case 1: GPIOA->CFGLR=GPIOA->CFGLR & 0xffffff0f; // AN1 is PA1/DIP8-1 ,PA1/DIP20-5 SET Analog input mode
+            i = Get_ADC_Val(1);    //Read AN_1
+            break;
+    case 3: GPIOA->CFGLR=GPIOA->CFGLR & 0xfffff0ff; // AN0 is PA2/DIP8-3 ,PA2/DIP20-6
+            i = Get_ADC_Val(0);    //  AN0 PA2の読み取り
+            break;
+    case 7: GPIOC->CFGLR=GPIOC->CFGLR & 0xfff0ffff; //  AN2 PC4/DIP8-7, PC4/DIP20-14
+            i = Get_ADC_Val(2);
+            break;
+#if 0
+    case 8: GPIOD->CFGLR=GPIOD->CFGLR & 0xff0fffff; // AN5 Pd4/Dip8-8, PD5/20Pin-2
+            i = Get_ADC_Val(5);
+            break;
+#endif
+    case 6:
+    case 19: GPIOD->CFGLR=GPIOD->CFGLR & 0xfffff0ff; // AN3, PD2/Dip8-端子なし, PD2/20Pin-19 動作OK　/0615
+            i = Get_ADC_Val(3);    // AN3 Pd2の読み取り　Dip8では端子には出ていない。
+                break;
+    default: break;
+    }
+    return (i);
+}
+#endif
+// Terminal control
+/* #010
+#define c_putch(c) Serial.write(c)
+#define c_getch( ) Serial.read()
+#define c_kbhit( ) Serial.available()   // RXにデータが来てるかどうかのチェック
+*/
+//#define c_getch( ) Serial.read()
+//#define c_putch(c) USART_SendData(USART1,c) // #010,#011
+//#define c_getch( ) USART_ReceiveData(USART1)
+#define c_kbhit( ) USART_GetFlagStatus(USART1, USART_FLAG_RXNE)      // RXにデータ受信なければ==0です。
+/*
+名前： c_getch()   2024/0505
+機能： UARTからデータを読む。
+引数：　送るデータ
+戻り値：　受信データ、ナシなら－１を返す
+ */
+char    c_getch()   {
+char    i;
+while(USART_GetFlagStatus(USART1, USART_FLAG_RXNE) == RESET)
+{
+    /* waiting for receiving finish */
+}
+    i=USART_ReceiveData(USART1);
+    if( i>0)
+        return(i);
+    else {
+        i=-1;
+        return(i);
+    }
+}
+/*
+名前： c_putch()
+機能： 1データを送り、送り終わったら戻る。
+引数：　送るデータ
+戻り値：　ナシ
+ */
+void    c_putch(char c) {
+    USART_SendData(USART1,c);
+    while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET)
+    {
+        /* waiting for sending finish */
+    }
+}
+#define KEY_ENTER 13
+void newline(void) {
+  c_putch(13); //CR
+  c_putch(10); //LF
+}
+// #020 RAND()
+//extern unsigned short   seed_val;
+//void    seed_set(void){
+//  srand(seed_val);
+//  srand(70);
+
+// Return random number
+/*
+ * 名称：  getrnd(桁数）
+ * 機能：  乱数を返します
+ * 引数：　乱数の桁数　10なら0,,,9
+ * 戻値：　乱数
+ * 注釈： RISCでは使えませんーー＞ stdlib.h が必要。乱数の種は　srand関数です。
+ * 履歴：　2024/0512...2024/0617 https://qiita.com/suraimu/items/680f32e32c19e9766056
+ */
+unsigned int first_num = 13;
+uint16_t    seed=0;
+// x0を定義している
+uint16_t getrnd(uint16_t size){
+uint16_t    i,m;
+    if(seed == 0)   {
+        first_num = getadc( 19);
+        ++seed;
+    }
+    // 漸化式のx1を求めている
+    // 今回はAを109,Cを1021,Mを32768と設定している
+    first_num = (first_num*109+1021)%32768;
+    m = first_num;
+    if (0 < size )  {
+      i= first_num / size;
+      m= first_num - (size * i);
+    }
+ //   return first_num;
+    return (m);
+}
+
+// Prototypes (necessity minimum)
+ short iexp(void);
+
+// Keyword table
+const char *kwtbl[] = {
+  "GOTO", "GOSUB", "RETURN",
+  "FOR", "TO", "STEP", "NEXT",
+  "IF", "REM", "CLT", "STOP",
+  "INPUT", "PRINT", "LET",
+#ifdef _OUT_
+  "OUT", "HIGH", "LOW",   // #031 中間コードを登録する。
+#endif
+#ifdef _IN_
+  "IN",     //? #040
+#endif
+#ifdef _ADC_
+  "ANA",
+#endif
+#ifdef _PROG_
+  "SAVE","BOOT","LOAD","LINK",
+#endif
+  ",", ";",
+  "-", "+", "*", "/", "(", ")",
+  ">=", "#", ">", "=", "<=", "<",
+  "@", "RND", "ABS", "SIZE","TICK",
+  "LIST", "RUN", "NEW"
+};
+
+// Keyword count
+#define SIZE_KWTBL (sizeof(kwtbl) / sizeof(const char*))
+
+// i-code(Intermediate code) assignment 中間コード表
+enum {
+  I_GOTO, I_GOSUB, I_RETURN,
+  I_FOR, I_TO, I_STEP, I_NEXT,
+  I_IF, I_REM, I_CLT, I_STOP,
+  I_INPUT, I_PRINT, I_LET,
+#ifdef _OUT_
+  I_OUT, I_HIGH, I_LOW,   // #030,#031
+#endif
+#ifdef _IN_
+  I_IN,
+#endif
+#ifdef _ADC_
+  I_ANA,    // #050
+#endif
+#ifdef _PROG_     // #060
+  I_SAVE,I_BOOT,I_LOAD,I_LINK,
+#endif
+  I_COMMA, I_SEMI,
+  I_MINUS, I_PLUS, I_MUL, I_DIV, I_OPEN, I_CLOSE,
+  I_GTE, I_SHARP, I_GT, I_EQ, I_LTE, I_LT,
+  I_ARRAY, I_RND, I_ABS, I_SIZE,I_TICK,
+  I_LIST, I_RUN, I_NEW,
+  I_NUM, I_VAR, I_STR,
+  I_EOL
+};
+
+// List formatting condition
+// 後ろに空白を入れない中間コード          表示用です。
+const unsigned char i_nsa[] = {
+#ifdef _OUT_
+  I_HIGH, I_LOW,   // #030 ,#031
+#endif
+#ifdef _IN_
+  I_IN,
+#endif
+#ifdef _ADC_
+  I_ANA,    // #050
+#endif
+  I_RETURN, I_STOP, I_COMMA,
+  I_MINUS, I_PLUS, I_MUL, I_DIV, I_OPEN, I_CLOSE,
+  I_GTE, I_SHARP, I_GT, I_EQ, I_LTE, I_LT,
+  I_ARRAY, I_RND, I_ABS, I_SIZE, I_TICK
+};
+
+// 前が定数か変数のとき前の空白をなくす中間コード
+const unsigned char i_nsb[] = {
+  I_MINUS, I_PLUS, I_MUL, I_DIV, I_OPEN, I_CLOSE,
+  I_GTE, I_SHARP, I_GT, I_EQ, I_LTE, I_LT,
+  I_COMMA, I_SEMI, I_EOL
+};
+
+// exception search function
+char sstyle(unsigned char code,
+  const unsigned char *table, unsigned char count) {
+  while(count--) //中間コードの数だけ繰り返す
+    if (code == table[count]) //もし該当の中間コードがあったら
+      return 1; //1を持ち帰る
+  return 0; //（なければ）0を持ち帰る
+}
+
+// exception search macro
+#define nospacea(c) sstyle(c, i_nsa, sizeof(i_nsa))
+#define nospaceb(c) sstyle(c, i_nsb, sizeof(i_nsb))
+
+// Error messages
+unsigned char err;// Error message index
+const char* errmsg[] = {
+  "OK",                     // 正常終了
+  "Devision by zero",       // ゼロで除算しようとした
+  "Overflow",               //　値が　－３２７６７～３２７６７の範囲を超えている
+  "Subscript out of range", // 配列の添字が所定の値を（標準は６３）を超えている
+  "Icode buffer full",      // 指示が長すぎる
+  "List full",              // プログラムが保存領域におさまらない
+  "GOSUB too many nested",  // GOSUB-RETURNのネストが所定の３より多い
+  "RETURN stack underflow", //　RETURNに対する　GOSUBが無い
+  "FOR too many nested",    // FOR-NEXTのネストが３を超えている
+  "NEXT without FOR",       //　NEXTに対応する　FORが無い
+  "NEXT without counter",   // NEXTのあとに変数が記述されていない
+  "NEXT mismatch FOR",      // FORとNEXTの変数が一致しない
+  "FOR without variable",   // FORのあとに変数が記載されていない
+  "FOR without TO",         // FOR　の後に　TOが記述されていない
+  "LET without variable",   // LETのあとに変数が記述されていない
+  "IF without condition",   //　IFのあとに条件が記述されていない
+  "Undefined line number",  //　分岐先の行が存在しない
+  "\'(\' or \')\' expected",    // 「（」 または　「）」が記述されていない
+  "\'=\' expected",         // ［\」　が　記述されていない
+  "Illegal command",        // プログラムが、命令を含んでいる、例） LIST，RUN等
+  "Syntax error",           //　文法に従っていない
+  "Internal error",         // 豊四季タイニーBASICのバグにより実行できない
+  "Abort by [ESC]"          // 「ESC]キーによって　中断された
+};
+
+// Error code assignment
+enum {
+  ERR_OK,
+  ERR_DIVBY0,
+  ERR_VOF,
+  ERR_SOR,
+  ERR_IBUFOF, ERR_LBUFOF,
+  ERR_GSTKOF, ERR_GSTKUF,
+  ERR_LSTKOF, ERR_LSTKUF,
+  ERR_NEXTWOV, ERR_NEXTUM, ERR_FORWOV, ERR_FORWOTO,
+  ERR_LETWOV, ERR_IFWOC,
+  ERR_ULN,
+  ERR_PAREN, ERR_VWOEQ,
+  ERR_COM,
+  ERR_SYNTAX,
+  ERR_SYS,
+  ERR_ESC
+};
+
+// RAM mapping
+char lbuf[SIZE_LINE]; //Command line buffer
+unsigned char ibuf[SIZE_IBUF]; //i-code conversion buffer
+short var[26]; //Variable area
+short arr[SIZE_ARRY]; //Array area
+unsigned char listbuf[SIZE_LIST]; //List area
+unsigned char* clp; //Pointer current line
+unsigned char* cip; //Pointer current Intermediate code
+unsigned char* gstk[SIZE_GSTK]; //GOSUB stack
+unsigned char gstki; //GOSUB stack index
+unsigned char* lstk[SIZE_LSTK]; //FOR stack
+  unsigned char lstki; //FOR stack index
+// unsigned int lstki; //FOR stack index   // ++#012
+
+// Standard C libraly (about) same functions
+char c_toupper(char c) {
+  return(c <= 'z' && c >= 'a' ? c - 32 : c);
+}
+char c_isprint(char c) {
+  return(c >= 32 && c <= 126);
+}
+char c_isspace(char c) {
+  return(c == ' ' || (c <= 13 && c >= 9));
+}
+char c_isdigit(char c) {
+  return(c <= '9' && c >= '0');
+}
+char c_isalpha(char c) {
+  return ((c <= 'z' && c >= 'a') || (c <= 'Z' && c >= 'A'));
+}
+
+void c_puts(const char *s) {
+  while (*s) c_putch(*s++); //終端でなければ出力して繰り返す
+}
+
+void c_gets() {
+  char c; //文字
+  unsigned char len; //文字数
+
+  len = 0; //文字数をクリア
+  while ((c = c_getch()) != KEY_ENTER) { //改行でなければ繰り返す
+    if (c == 9) c = ' '; //［Tab］キーは空白に置き換える
+    //［BackSpace］キーが押された場合の処理（行頭ではないこと）
+    if (((c == 8) || (c == 127)) && (len > 0)) {
+      len--; //文字数を1減らす
+      c_putch(8); c_putch(' '); c_putch(8); //文字を消す
+    } else
+    //表示可能な文字が入力された場合の処理（バッファのサイズを超えないこと）
+    if (c_isprint(c) && (len < (SIZE_LINE - 1))) {
+      lbuf[len++] = c; //バッファへ入れて文字数を1増やす
+      c_putch(c); //表示
+    }
+  }
+  newline(); //改行
+  lbuf[len] = 0; //終端を置く
+
+  if (len > 0) { //もしバッファが空でなければ
+    while (c_isspace(lbuf[--len])); //末尾の空白を戻る
+    lbuf[++len] = 0; //終端を置く
+  }
+}
+
+// Print numeric specified columns
+void putnum(short value, short d) {
+  unsigned char dig; //桁位置
+  unsigned char sign; //負号の有無（値を絶対値に変換した印）
+
+  if (value < 0) { //もし値が0未満なら
+    sign = 1; //負号あり
+    value = -value; //値を絶対値に変換
+  } else {
+    sign = 0; //負号なし
+  }
+
+  lbuf[6] = 0; //終端を置く
+  dig = 6; //桁位置の初期値を末尾に設定
+  do { //次の処理をやってみる
+    lbuf[--dig] = (value % 10) + '0'; //1の位を文字に変換して保存
+    value /= 10; //1桁落とす
+  } while (value > 0); //値が0でなければ繰り返す
+
+  if (sign) //もし負号ありなら
+    lbuf[--dig] = '-'; //負号を保存
+
+  while (6 - dig < d) { //指定の桁数を下回っていれば繰り返す
+    c_putch(' '); //桁の不足を空白で埋める
+    d--; //指定の桁数を1減らす
+  }
+  c_puts(&lbuf[dig]); //桁位置からバッファの文字列を表示
+}
+
+// Input numeric and return value
+// Called by only INPUT statement
+short getnum() {
+  short value, tmp; //値と計算過程の値
+  char c; //文字
+  unsigned char len; //文字数
+  unsigned char sign; //負号
+
+  len = 0; //文字数をクリア
+  while ((c = c_getch()) != KEY_ENTER) { //改行でなければ繰り返す
+    //［BackSpace］キーが押された場合の処理（行頭ではないこと）
+    if (((c == 8) || (c == 127)) && (len > 0)) {
+      len--; //文字数を1減らす
+      c_putch(8); c_putch(' '); c_putch(8); //文字を消す
+    } else
+    //行頭の符号および数字が入力された場合の処理（符号込みで6桁を超えないこと）
+    if ((len == 0 && (c == '+' || c == '-')) ||
+      (len < 6 && c_isdigit(c))) {
+      lbuf[len++] = c; //バッファへ入れて文字数を1増やす
+      c_putch(c); //表示
+    }
+  }
+  newline(); //改行
+  lbuf[len] = 0; //終端を置く
+
+  switch (lbuf[0]) { //先頭の文字で分岐
+  case '-': //「-」の場合
+    sign = 1; //負の値
+    len = 1;  //数字列はlbuf[1]以降
+    break;
+  case '+': //「+」の場合
+    sign = 0; //正の値
+    len = 1;  //数字列はlbuf[1]以降
+    break;
+  default:  //どれにも該当しない場合
+    sign = 0; //正の値
+    len = 0;  //数字列はlbuf[0]以降
+    break;
+  }
+
+  value = 0; //値をクリア
+  tmp = 0; //計算過程の値をクリア
+  while (lbuf[len]) { //終端でなければ繰り返す
+    tmp = 10 * value + lbuf[len++] - '0'; //数字を値に変換
+    if (value > tmp) { //もし計算過程の値が前回より小さければ
+      err = ERR_VOF; //オーバーフローを記録
+    }
+    value = tmp; //計算過程の値を記録
+  }
+
+  if (sign) //もし負の値なら
+    return -value; //負の値に変換して持ち帰る
+
+  return value; //値を持ち帰る
+}
+
+// Convert token to i-code
+// Return byte length or 0
+unsigned char toktoi() {
+  unsigned char i; //ループカウンタ（一部の処理で中間コードに相当）
+  unsigned char len = 0; //中間コードの並びの長さ
+  char* pkw = 0; //ひとつのキーワードの内部を指すポインタ
+  char* ptok; //ひとつの単語の内部を指すポインタ
+  char* s = lbuf; //文字列バッファの内部を指すポインタ
+  char c; //文字列の括りに使われている文字（「"」または「'」）
+  short value; //定数
+  short tmp; //変換過程の定数
+
+  while (*s) { //文字列1行分の終端まで繰り返す
+    while (c_isspace(*s)) s++; //空白を読み飛ばす
+
+    //キーワードテーブルで変換を試みる
+    for (i = 0; i < SIZE_KWTBL; i++) { //全部のキーワードを試す
+      pkw = (char *)kwtbl[i]; //キーワードの先頭を指す
+      ptok = s; //単語の先頭を指す
+
+      //キーワードと単語の比較
+      while ( //次の条件が成立する限り繰り返す
+      (*pkw != 0) && //キーワードの末尾に達していなくて
+      (*pkw == c_toupper(*ptok))) { //文字が一致している
+        pkw++; //キーワードの次の文字へ進む
+        ptok++; //単語の次の文字へ進む
+      }
+
+      //キーワードと単語が一致した場合の処理
+      if (*pkw == 0) { //もしキーワードの末尾に達していたら（変換成功）
+        if (len >= SIZE_IBUF - 1) { //もし中間コードが長すぎたら
+          err = ERR_IBUFOF; //エラー番号をセット
+          return 0; //0を持ち帰る
+        }
+
+        ibuf[len++] = i; //中間コードを記録
+        s = ptok; //文字列の処理ずみの部分を詰める
+        break; //単語→中間コード1個分の変換を完了
+      } //キーワードと単語が一致した場合の処理の末尾
+
+    } //キーワードテーブルで変換を試みるの末尾
+
+    //コメントへの変換を試みる
+    if(i == I_REM) { //もし中間コードがI_REMなら
+      while (c_isspace(*s)) s++; //空白を読み飛ばす
+      ptok = s; //コメントの先頭を指す
+
+      for (i = 0; *ptok++; i++); //コメントの文字数を得る
+      if (len >= SIZE_IBUF - 2 - i) { //もし中間コードが長すぎたら
+        err = ERR_IBUFOF; //エラー番号をセット
+        return 0; //0を持ち帰る
+      }
+
+      ibuf[len++] = i; //コメントの文字数を記録
+      while (i--) { //コメントの文字数だけ繰り返す
+        ibuf[len++] = *s++; //コメントを記録
+      }
+      break; //文字列の処理を打ち切る（終端の処理へ進む）
+    }
+
+    if (*pkw == 0) //もしすでにキーワードで変換に成功していたら
+      continue; //繰り返しの先頭へ戻って次の単語を変換する
+
+    ptok = s; //単語の先頭を指す
+
+    //定数への変換を試みる
+    if (c_isdigit(*ptok)) { //もし文字が数字なら
+      value = 0; //定数をクリア
+      tmp = 0; //変換過程の定数をクリア
+      do { //次の処理をやってみる
+        tmp = 10 * value + *ptok++ - '0'; //数字を値に変換
+        if (value > tmp) { //もし前回の値より小さければ
+          err = ERR_VOF; //エラー番号をセット
+          return 0; //0を持ち帰る
+        }
+        value = tmp; //0を持ち帰る
+      } while (c_isdigit(*ptok)); //文字が数字である限り繰り返す
+
+      if (len >= SIZE_IBUF - 3) { //もし中間コードが長すぎたら
+        err = ERR_IBUFOF; //エラー番号をセット
+        return 0; //0を持ち帰る
+      }
+      s = ptok; //文字列の処理ずみの部分を詰める
+      ibuf[len++] = I_NUM; //中間コードを記録
+      ibuf[len++] = value & 255; //定数の下位バイトを記録
+      ibuf[len++] = value >> 8; //定数の上位バイトを記録
+    }
+    else
+
+    //文字列への変換を試みる
+    if (*s == '\"' || *s == '\'') { //もし文字が「"」か「'」なら
+      c = *s++; //「"」か「'」を記憶して次の文字へ進む
+      ptok = s; //文字列の先頭を指す
+      //文字列の文字数を得る
+      for (i = 0; (*ptok != c) && c_isprint(*ptok); i++)
+        ptok++;
+      if (len >= SIZE_IBUF - 1 - i) { //もし中間コードが長すぎたら
+        err = ERR_IBUFOF; //エラー番号をセット
+        return 0; //0を持ち帰る
+      }
+      ibuf[len++] = I_STR; //中間コードを記録
+      ibuf[len++] = i; //文字列の文字数を記録
+      while (i--) { //文字列の文字数だけ繰り返す
+        ibuf[len++] = *s++; //文字列を記録
+      }
+      if (*s == c) s++; //もし文字が「"」か「'」なら次の文字へ進む
+    }
+    else
+
+    //変数への変換を試みる
+    if (c_isalpha(*ptok)) { //もし文字がアルファベットなら
+      if (len >= SIZE_IBUF - 2) { //もし中間コードが長すぎたら
+        err = ERR_IBUFOF; //エラー番号をセット
+        return 0; //0を持ち帰る
+      }
+      //もし変数が3個並んだら
+      if (len >= 4 && ibuf[len - 2] == I_VAR && ibuf[len - 4] == I_VAR) {
+        err = ERR_SYNTAX; //エラー番号をセット
+        return 0; //0を持ち帰る
+      }
+
+      ibuf[len++] = I_VAR; //中間コードを記録
+      ibuf[len++] = c_toupper(*ptok) - 'A'; //変数番号を記録
+      s++; //次の文字へ進む
+    }
+    else
+
+    //どれにも当てはまらなかった場合
+    {
+      err = ERR_SYNTAX; //エラー番号をセット
+      return 0; //0を持ち帰る
+    }
+  } //文字列1行分の終端まで繰り返すの末尾
+
+  ibuf[len++] = I_EOL; //文字列1行分の終端を記録
+  return len; //中間コードの長さを持ち帰る
+}
+
+// Return free memory size
+short getsize() {
+  unsigned char* lp; //ポインタ
+
+  for (lp = listbuf; *lp; lp += *lp); //ポインタをリストの末尾へ移動
+  return listbuf + SIZE_LIST - lp - 1; //残りを計算して持ち帰る
+}
+
+// Get line numbere by line pointer
+short getlineno(unsigned char *lp) {
+  if(*lp == 0) //もし末尾だったら
+    return 32767; //行番号の最大値を持ち帰る
+  return *(lp + 1) | *(lp + 2) << 8; //行番号を持ち帰る
+}
+
+// Search line by line number
+unsigned char* getlp(short lineno) {
+  unsigned char *lp; //ポインタ
+
+  for (lp = listbuf; *lp; lp += *lp) //先頭から末尾まで繰り返す
+    if (getlineno(lp) >= lineno) //もし指定の行番号以上なら
+      break; //繰り返しを打ち切る
+
+  return lp; //ポインタを持ち帰る
+}
+
+// Insert i-code to the list
+void inslist() {
+  unsigned char *insp; //挿入位置
+  unsigned char *p1, *p2; //移動先と移動元
+  short len; //移動の長さ
+
+  if (getsize() < *ibuf) { //もし空きが不足していたら
+    err = ERR_LBUFOF; //エラー番号をセット
+    return; //処理を打ち切る
+  }
+
+  insp = getlp(getlineno(ibuf)); //挿入位置を取得
+
+  //同じ行番号の行が存在したらとりあえず削除
+  if (getlineno(insp) == getlineno(ibuf)) { //もし行番号が一致したら
+    p1 = insp; //p1を挿入位置に設定
+    p2 = p1 + *p1; //p2を次の行に設定
+    while ((len = *p2) != 0) { //次の行の長さが0でなければ繰り返す
+      while (len--) //次の行の長さだけ繰り返す
+        *p1++ = *p2++; //前へ詰める
+    }
+    *p1 = 0; //リストの末尾に0を置く
+  }
+
+  //行番号だけが入力された場合はここで終わる
+  if (*ibuf == 4) //もし長さが4（行番号のみ）なら
+    return; //終了する
+
+  //挿入のためのスペースを空ける
+  for (p1 = insp; *p1; p1 += *p1); //p1をリストの末尾へ移動
+  len = p1 - insp + 1; //移動する幅を計算
+  p2 = p1 + *ibuf; //p2を末尾より1行の長さだけ後ろに設定
+  while (len--) //移動する幅だけ繰り返す
+    *p2-- = *p1--; //後ろへズラす
+
+  //行を転送する
+  len = *ibuf; //中間コードの長さを設定
+  p1 = insp; //転送先を設定
+  p2 = ibuf; //転送元を設定
+  while (len--) //中間コードの長さだけ繰り返す
+    *p1++ = *p2++; //転送
+}
+
+//Listing 1 line of i-code
+void putlist(unsigned char* ip) {
+  unsigned char i; //ループカウンタ
+
+  while (*ip != I_EOL) { //行末でなければ繰り返す
+
+    //キーワードの処理
+    if (*ip < SIZE_KWTBL) { //もしキーワードなら
+      c_puts(kwtbl[*ip]); //キーワードテーブルの文字列を表示
+      if (!nospacea(*ip)) //もし例外にあたらなければ
+        c_putch(' '); //空白を表示
+
+      if (*ip == I_REM) { //もし中間コードがI_REMなら
+        ip++; //ポインタを文字数へ進める
+        i = *ip++; //文字数を取得してポインタをコメントへ進める
+        while (i--) //文字数だけ繰り返す
+          c_putch(*ip++); //ポインタを進めながら文字を表示
+        return; //終了する
+      }
+
+      ip++;//ポインタを次の中間コードへ進める
+    }
+    else
+
+    //定数の処理
+    if (*ip == I_NUM) { //もし定数なら
+      ip++; //ポインタを値へ進める
+      putnum(*ip | *(ip + 1) << 8, 0); //値を取得して表示
+      ip += 2; //ポインタを次の中間コードへ進める
+      if (!nospaceb(*ip)) //もし例外にあたらなければ
+        c_putch(' '); //空白を表示
+    }
+    else
+
+    //変数の処理
+    if (*ip == I_VAR) { //もし定数なら
+      ip++; //ポインタを変数番号へ進める
+      c_putch(*ip++ + 'A'); //変数名を取得して表示
+      if (!nospaceb(*ip)) //もし例外にあたらなければ
+        c_putch(' '); //空白を表示
+    }
+    else
+
+    //文字列の処理
+    if (*ip == I_STR) { //もし文字列なら
+      char c; //文字列の括りに使われている文字（「"」または「'」）
+
+      //文字列の括りに使われている文字を調べる
+      c = '\"'; //文字列の括りを仮に「"」とする
+      ip++; //ポインタを文字数へ進める
+      for (i = *ip; i; i--) //文字数だけ繰り返す
+        if (*(ip + i) == '\"') { //もし「"」があれば
+          c = '\''; //文字列の括りは「'」
+          break; //繰り返しを打ち切る
+        }
+
+      //文字列を表示する
+      c_putch(c); //文字列の括りを表示
+      i = *ip++; //文字数を取得してポインタを文字列へ進める
+      while (i--) //文字数だけ繰り返す
+        c_putch(*ip++); //ポインタを進めながら文字を表示
+      c_putch(c); //文字列の括りを表示
+      if (*ip == I_VAR) //もし次の中間コードが変数だったら
+        c_putch(' '); //空白を表示
+    }
+
+    else { //どれにも当てはまらなかった場合
+      err = ERR_SYS; //エラー番号をセット
+      return; //終了する
+    }
+  }
+}
+
+// Get argument in parenthesis
+short getparam() {
+  short value; //値
+
+  if (*cip != I_OPEN) { //もし「(」でなければ
+    err = ERR_PAREN; //エラー番号をセット
+    return 0; //終了
+  }
+  cip++; //中間コードポインタを次へ進める
+
+  value = iexp(); //式を計算
+  if (err) //もしエラーが生じたら
+    return 0; //終了
+
+  if (*cip != I_CLOSE) { //もし「)」でなければ
+    err = ERR_PAREN; //エラー番号をセット
+    return 0; //終了
+  }
+  cip++; //中間コードポインタを次へ進める
+
+  return value; //値を持ち帰る
+}
+
+// Get value
+short ivalue() {
+short value; //値
+
+  switch (*cip) { //中間コードで分岐
+
+  //定数の取得
+  case I_NUM: //定数の場合
+    cip++; //中間コードポインタを次へ進める
+    value = *cip | *(cip + 1) << 8; //定数を取得
+    cip += 2; //中間コードポインタを定数の次へ進める
+    break; //ここで打ち切る
+
+  //+付きの値の取得
+  case I_PLUS: //「+」の場合
+    cip++; //中間コードポインタを次へ進める
+    value = ivalue(); //値を取得
+    break; //ここで打ち切る
+
+  //負の値の取得
+  case I_MINUS: //「-」の場合
+    cip++; //中間コードポインタを次へ進める
+    value = 0 - ivalue(); //値を取得して負の値に変換
+    break; //ここで打ち切る
+
+  //変数の値の取得
+  case I_VAR: //変数の場合
+    cip++; //中間コードポインタを次へ進める
+    value = var[*cip++]; //変数番号から変数の値を取得して次を指し示す
+    break; //ここで打ち切る
+
+  //括弧の値の取得
+  case I_OPEN: //「(」の場合
+    value = getparam(); //括弧の値を取得
+    break; //ここで打ち切る
+
+  //配列の値の取得
+  case I_ARRAY: //配列の場合
+    cip++; //中間コードポインタを次へ進める
+    value = getparam(); //括弧の値を取得
+    if (err) //もしエラーが生じたら
+      break; //ここで打ち切る
+    if (value >= SIZE_ARRY) { //もし添え字の上限を超えたら
+      err = ERR_SOR; //エラー番号をセット
+      break; //ここで打ち切る
+    }
+    value = arr[value]; //配列の値を取得
+    break; //ここで打ち切る
+
+  //関数の値の取得
+  case I_RND: //関数RNDの場合
+    cip++; //中間コードポインタを次へ進める
+    value = getparam(); //括弧の値を取得
+    if (err) //もしエラーが生じたら
+      break; //ここで打ち切る
+    value = getrnd(value); //乱数を取得
+    break; //ここで打ち切る
+
+  case I_ABS: //関数ABSの場合
+    cip++; //中間コードポインタを次へ進める
+    value = getparam(); //括弧の値を取得
+    if (err) //もしエラーが生じたら
+      break; //ここで打ち切る
+    if(value < 0) //もし0未満なら
+      value *= -1; //正負を反転
+    break; //ここで打ち切る
+
+  case I_SIZE: //関数SIZEの場合
+    cip++; //中間コードポインタを次へ進める
+    //もし後ろに「()」がなかったら
+    if ((*cip != I_OPEN) || (*(cip + 1) != I_CLOSE)) {
+      err = ERR_PAREN; //エラー番号をセット
+      break; //ここで打ち切る
+    }
+    cip += 2; //中間コードポインタを「()」の次へ進める
+    value = getsize(); //プログラム保存領域の空きを取得
+    break; //ここで打ち切る
+#ifdef  _TICK_
+extern  uint16_t    sys_cnt;
+      case I_TICK:  //
+      cip++; //中間コードポインタを次へ進める
+      //もし後ろに「()」がなかったら
+      if ((*cip != I_OPEN) || (*(cip + 1) != I_CLOSE)) {
+        err = ERR_PAREN; //エラー番号をセット
+        break; //ここで打ち切る
+      }
+      cip += 2; //中間コードポインタを「()」の次へ進める
+      value = sys_cnt;
+      break; //ここで打ち切る
+#endif
+//#if 0
+#ifdef _IN_
+  case  I_IN:   // #040 ピン入力　読む。0:（LOW),1:(HIGH)
+      cip++;         //中間コードポインタを次へ進める
+      value = getparam();       //括弧の値を取得
+      if (err)                  //もしエラーが生じたら
+        break;                  //ここで打ち切る
+      value = getsw_bit(value); //取得、　DIP8P 1=PA1, ,3=PA2, ,5=PC1,6=PC2,7=PC4,8=PD4(UTX)
+      break;                    //ここで打ち切る
+#endif
+
+#ifdef  _ADC_
+  case  I_ANA:
+      cip++;         //中間コードポインタを次へ進める
+      value = getparam();       //括弧の値を取得
+      if (err)                  //もしエラーが生じたら
+        break;                  //ここで打ち切る。
+      value = getadc(value);  // スイッチの状態を取得
+      break;    // 打ち切る
+#endif
+#if 0
+ #ifdef _IN_
+    case I_IN:      // #040  動作品 SW Cポートを一括して読む。　Cポート全部です、ビットごとでは無い
+        cip++;
+ //       value=(*cip);
+        value=getsw();
+  //      cip++;
+//        isw();
+//        value=sw_value;
+        break;
+#endif
+#endif
+  default: //以上のいずれにも該当しなかった場合
+    err = ERR_SYNTAX; //エラー番号をセット
+    break; //ここで打ち切る
+  }
+  return value; //取得した値を持ち帰る
+}
+
+// multiply or divide calculation
+short imul() {
+  short value, tmp; //値と演算値
+
+  value = ivalue(); //値を取得
+  if (err) //もしエラーが生じたら
+    return -1; //終了
+
+  while (1) //無限に繰り返す
+  switch(*cip){ //中間コードで分岐
+
+  case I_MUL: //掛け算の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = ivalue(); //演算値を取得
+    value *= tmp; //掛け算を実行
+    break; //ここで打ち切る
+
+  case I_DIV: //割り算の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = ivalue(); //演算値を取得
+    if (tmp == 0) { //もし演算値が0なら
+      err = ERR_DIVBY0; //エラー番号をセット
+      return -1; //終了
+    }
+    value /= tmp; //割り算を実行
+    break; //ここで打ち切る
+
+  default: //以上のいずれにも該当しなかった場合
+    return value; //値を持ち帰る
+  } //中間コードで分岐の末尾
+}
+
+// add or subtract calculation
+short iplus() {
+  short value, tmp; //値と演算値
+
+  value = imul(); //値を取得
+  if (err) //もしエラーが生じたら
+    return -1; //終了
+
+  while (1) //無限に繰り返す
+  switch(*cip){ //中間コードで分岐
+
+  case I_PLUS: //足し算の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = imul(); //演算値を取得
+    value += tmp; //足し算を実行
+    break; //ここで打ち切る
+
+  case I_MINUS: //引き算の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = imul(); //演算値を取得
+    value -= tmp; //引き算を実行
+    break; //ここで打ち切る
+
+  default: //以上のいずれにも該当しなかった場合
+    return value; //値を持ち帰る
+  } //中間コードで分岐の末尾
+}
+
+// The parser
+short iexp() {
+  short value, tmp; //値と演算値
+
+  value = iplus(); //値を取得
+  if (err) //もしエラーが生じたら
+    return -1; //終了
+
+  // conditional expression
+  while (1) //無限に繰り返す
+  switch(*cip){ //中間コードで分岐
+
+  case I_EQ: //「=」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value == tmp); //真偽を判定
+    break; //ここで打ち切る
+  case I_SHARP: //「#」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value != tmp); //真偽を判定
+    break; //ここで打ち切る
+  case I_LT: //「<」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value < tmp); //真偽を判定
+    break; //ここで打ち切る
+  case I_LTE: //「<=」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value <= tmp); //真偽を判定
+    break; //ここで打ち切る
+  case I_GT: //「>」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value > tmp); //真偽を判定
+    break; //ここで打ち切る
+  case I_GTE: //「>=」の場合
+    cip++; //中間コードポインタを次へ進める
+    tmp = iplus(); //演算値を取得
+    value = (value >= tmp); //真偽を判定
+    break; //ここで打ち切る
+
+  default: //以上のいずれにも該当しなかった場合
+    return value; //値を持ち帰る
+  } //中間コードで分岐の末尾
+}
+
+// PRINT handler
+void iprint() {
+  short value; //値
+  short len; //桁数
+  unsigned char i; //文字数
+
+  len = 0; //桁数を初期化
+  while (*cip != I_SEMI && *cip != I_EOL) { //文末まで繰り返す
+    switch (*cip) { //中間コードで分岐
+
+    case I_STR: //文字列の場合
+      cip++; //中間コードポインタを次へ進める
+      i = *cip++; //文字数を取得
+      while (i--) //文字数だけ繰り返す
+        c_putch(*cip++); //文字を表示
+      break; //打ち切る
+
+    case I_SHARP: //「#」の場合
+      cip++; //中間コードポインタを次へ進める
+      len = iexp(); //桁数を取得
+      if (err) //もしエラーが生じたら
+        return; //終了
+      break; //打ち切る
+
+    default: //以上のいずれにも該当しなかった場合（式とみなす）
+      value = iexp(); //値を取得
+      if (err) //もしエラーが生じたら
+        return; //終了
+      putnum(value, len); //値を表示
+      break; //打ち切る
+    } //中間コードで分岐の末尾
+
+    if (*cip == I_COMMA) { //もしコンマがあったら
+      cip++; //中間コードポインタを次へ進める
+      if (*cip == I_SEMI || *cip == I_EOL) //もし文末なら
+        return; //終了
+    } else { //コンマがなければ
+      if (*cip != I_SEMI && *cip != I_EOL) { //もし文末でなければ
+        err = ERR_SYNTAX; //エラー番号をセット
+        return; //終了
+      }
+    }
+  } //文末まで繰り返すの末尾
+
+  newline(); //改行
+}
+
+// INPUT handler
+void iinput() {
+  short value; //値
+  short index; //配列の添え字
+  unsigned char i; //文字数
+  unsigned char prompt; //プロンプト表示フラグ
+
+  while (1) { //無限に繰り返す
+    prompt = 1; //まだプロンプトを表示していない
+
+    //プロンプトが指定された場合の処理
+    if(*cip == I_STR){ //もし中間コードが文字列なら
+      cip++; //中間コードポインタを次へ進める
+      i = *cip++; //文字数を取得
+      while (i--) //文字数だけ繰り返す
+        c_putch(*cip++); //文字を表示
+      prompt = 0; //プロンプトを表示した
+    }
+
+    //値を入力する処理
+    switch (*cip) { //中間コードで分岐
+    case I_VAR: //変数の場合
+      cip++; //中間コードポインタを次へ進める
+      if (prompt) { //もしまだプロンプトを表示していなければ
+        c_putch(*cip + 'A'); //変数名を表示
+        c_putch(':'); //「:」を表示
+      }
+      value = getnum(); //値を入力
+      if (err) //もしエラーが生じたら
+        return; //終了
+      var[*cip++] = value; //変数へ代入
+      break; //打ち切る
+
+    case I_ARRAY: //配列の場合
+      cip++; //中間コードポインタを次へ進める
+      index = getparam(); //配列の添え字を取得
+      if (err) //もしエラーが生じたら
+        return; //終了
+      if (index >= SIZE_ARRY) { //もし添え字が上限を超えたら
+        err = ERR_SOR; //エラー番号をセット
+        return; //終了
+      }
+      if (prompt) { //もしまだプロンプトを表示していなければ
+        c_puts("@("); //「@(」を表示
+        putnum(index, 0); //添え字を表示
+        c_puts("):"); //「):」を表示
+      }
+      value = getnum(); //値を入力
+      if (err) //もしエラーが生じたら
+        return; //終了
+      arr[index] = value; //配列へ代入
+      break; //打ち切る
+
+    default: //以上のいずれにも該当しなかった場合
+      err = ERR_SYNTAX; //エラー番号をセット
+      return; //終了
+    } //中間コードで分岐の末尾
+
+    //値の入力を連続するかどうか判定する処理
+    switch (*cip) { //中間コードで分岐
+    case I_COMMA: //コンマの場合
+      cip++; //中間コードポインタを次へ進める
+      break; //打ち切る
+    case I_SEMI: //「;」の場合
+    case I_EOL: //行末の場合
+      return; //終了
+    default: //以上のいずれにも該当しなかった場合
+      err = ERR_SYNTAX; //エラー番号をセット
+      return; //終了
+    } //中間コードで分岐の末尾
+  } //無限に繰り返すの末尾
+}
+
+// Variable assignment handler
+void ivar() {
+  short value; //値
+  short index; //変数番号
+
+  index = *cip++; //変数番号を取得して次へ進む
+
+  if (*cip != I_EQ) { //もし「=」でなければ
+    err = ERR_VWOEQ; //エラー番号をセット
+    return; //終了
+  }
+  cip++; //中間コードポインタを次へ進める
+
+  //値の取得と代入
+  value = iexp(); //式の値を取得
+  if (err) //もしエラーが生じたら
+    return; //終了
+  var[index] = value; //変数へ代入
+}
+
+// Array assignment handler
+void iarray() {
+  short value; //値
+  short index; //配列の添え字
+
+  index = getparam(); //配列の添え字を取得
+  if (err) //もしエラーが生じたら
+    return; //終了
+
+  if (index >= SIZE_ARRY) { //もし添え字が上限を超えたら
+    err = ERR_SOR; //エラー番号をセット
+    return; //終了
+  }
+
+  if (*cip != I_EQ) { //もし「=」でなければ
+    err = ERR_VWOEQ; //エラー番号をセット
+    return; //終了
+  }
+  cip++; //中間コードポインタを次へ進める
+
+  value = iexp(); //式の値を取得
+  if (err) //もしエラーが生じたら
+    return; //終了
+  arr[index] = value; //配列へ代入
+}
+
+// LET handler
+void ilet() {
+  switch (*cip) { //中間コードで分岐
+
+  case I_VAR: //変数の場合
+    cip++; //中間コードポインタを次へ進める
+    ivar(); //変数への代入を実行
+    break; //打ち切る
+
+  case I_ARRAY: //配列の場合
+    cip++; //中間コードポインタを次へ進める
+    iarray(); //配列への代入を実行
+    break; //打ち切る
+
+  default: //以上のいずれにも該当しなかった場合
+    err = ERR_LETWOV; //エラー番号をセット
+    break; //打ち切る
+  }
+}
+
+// Execute a series of i-code
+unsigned char* iexe() {
+  short lineno; //行番号
+  unsigned char* lp; //未確定の（エラーかもしれない）行ポインタ
+  short index, vto, vstep; //FOR文の変数番号、終了値、増分
+  short condition; //IF文の条件値
+
+  while (*cip != I_EOL) { //行末まで繰り返す
+
+  //強制的な中断の判定
+    if (c_kbhit()) //もし未読文字があったら
+      if (c_getch() == 27) { //読み込んでもし［ESC］キーだったら
+        err = ERR_ESC; //エラー番号をセット
+        break; //打ち切る
+      }
+
+    //中間コードを実行
+    switch (*cip) { //中間コードで分岐
+
+    case I_GOTO: //GOTOの場合
+      cip++; //中間コードポインタを次へ進める
+      lineno = iexp(); //分岐先の行番号を取得
+      if (err) //もしエラーが生じたら
+        break; //打ち切る
+      lp = getlp(lineno); //分岐先のポインタを取得
+      if (lineno != getlineno(lp)) { //もし分岐先が存在しなければ
+        err = ERR_ULN; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      clp = lp; //行ポインタを分岐先へ更新
+      cip = clp + 3; //中間コードポインタを先頭の中間コードに更新
+      break; //打ち切る
+
+    case I_GOSUB: //GOSUBの場合
+      cip++; //中間コードポインタを次へ進める
+      lineno = iexp(); //分岐先の行番号を取得
+      if (err) //もしエラーが生じたら
+        break; //打ち切る
+      lp = getlp(lineno); //分岐先のポインタを取得
+      if (lineno != getlineno(lp)) { //もし分岐先が存在しなければ
+        err = ERR_ULN; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      //ポインタを退避
+      if (gstki > SIZE_GSTK - 2) { //もしGOSUBスタックがいっぱいなら   --#012 patch
+  //        if (gstki > SIZE_GSTK - 3) { //もしGOSUBスタックがいっぱいなら   ++#012 patch
+        err = ERR_GSTKOF; //エラー番号をセット
+        break; //打ち切る
+      }
+      gstk[gstki++] = clp; //行ポインタを退避
+      gstk[gstki++] = cip; //中間コードポインタを退避
+  //        gstk[gstki++] = (unsigned char*)lstki; //FOR stack indexを退避 ++#012
+
+      clp = lp; //行ポインタを分岐先へ更新
+      cip = clp + 3; //中間コードポインタを先頭の中間コードに更新
+      break; //打ち切る
+
+    case I_RETURN: //RETURNの場合
+      if (gstki < 2) { //もしGOSUBスタックが空なら
+//           if (gstki < 3) { //もしGOSUBスタックが空なら  +#012
+          err = ERR_GSTKUF; //エラー番号をセット
+        break; //打ち切る
+      }
+//      lstki = (int)gstk[–gstki]; //FOR stack indexを復帰  ++#012
+      cip = gstk[--gstki]; //行ポインタを復帰
+      clp = gstk[--gstki]; //中間コードポインタを復帰
+      break; //打ち切る
+
+    case I_FOR: //FORの場合
+      cip++; //中間コードポインタを次へ進める
+
+      //変数名を取得して開始値を代入（例I=1）
+      if (*cip++ != I_VAR) { //もし変数がなかったら
+        err = ERR_FORWOV; //エラー番号をセット
+        break; //打ち切る
+      }
+      index = *cip; //変数名を取得
+      ivar(); //代入文を実行
+      if (err) //もしエラーが生じたら
+        break; //打ち切る
+
+      //終了値を取得（例TO 5）
+      if (*cip == I_TO) { //もしTOだったら
+        cip++; //中間コードポインタを次へ進める
+        vto = iexp(); //終了値を取得
+      } else { //TOではなかったら
+        err = ERR_FORWOTO; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      //増分を取得（例STEP 1）
+      if (*cip == I_STEP) { //もしSTEPだったら
+        cip++; //中間コードポインタを次へ進める
+        vstep = iexp(); //増分を取得
+      } else //STEPではなかったら
+        vstep = 1; //増分を1に設定
+
+      //もし変数がオーバーフローする見込みなら
+      if (((vstep < 0) && (-32767 - vstep > vto)) ||
+        ((vstep > 0) && (32767 - vstep < vto))){
+        err = ERR_VOF; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      //繰り返し条件を退避
+      if (lstki > SIZE_LSTK - 5) { //もしFORスタックがいっぱいなら
+        err = ERR_LSTKOF; //エラー番号をセット
+        break; //打ち切る
+      }
+      lstk[lstki++] = clp; //行ポインタを退避
+      lstk[lstki++] = cip; //中間コードポインタを退避
+      //FORスタックに終了値、増分、変数名を退避
+      //Special thanks hardyboy
+      lstk[lstki++] = (unsigned char*)(uintptr_t)vto;
+      lstk[lstki++] = (unsigned char*)(uintptr_t)vstep;
+      lstk[lstki++] = (unsigned char*)(uintptr_t)index;
+      break; //打ち切る
+
+    case I_NEXT: //NEXTの場合
+      cip++; //中間コードポインタを次へ進める
+      if (lstki < 5) { //もしFORスタックが空なら
+        err = ERR_LSTKUF; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      //変数名を復帰
+      index = (short)(uintptr_t)lstk[lstki - 1]; //変数名を復帰
+      if (*cip++ != I_VAR) { //もしNEXTの後ろに変数がなかったら
+        err = ERR_NEXTWOV; //エラー番号をセット
+        break; //打ち切る
+      }
+      if (*cip++ != index) { //もし復帰した変数名と一致しなかったら
+        err = ERR_NEXTUM; //エラー番号をセット
+        break; //打ち切る
+      }
+
+      vstep = (short)(uintptr_t)lstk[lstki - 2]; //増分を復帰
+      var[index] += vstep; //変数の値を最新の開始値に更新
+      vto = (short)(uintptr_t)lstk[lstki - 3]; //終了値を復帰
+
+      //もし変数の値が終了値を超えていたら
+      if (((vstep < 0) && (var[index] < vto)) ||
+        ((vstep > 0) && (var[index] > vto))) {
+        lstki -= 5; //FORスタックを1ネスト分戻す
+        break; //打ち切る
+      }
+
+      //開始値が終了値を超えていなかった場合
+      cip = lstk[lstki - 4]; //行ポインタを復帰
+      clp = lstk[lstki - 5]; //中間コードポインタを復帰
+      break; //打ち切る
+
+    case I_IF: //IFの場合
+      cip++; //中間コードポインタを次へ進める
+      condition = iexp(); //真偽を取得
+      if (err) { //もしエラーが生じたら
+        err = ERR_IFWOC; //エラー番号をセット
+        break; //打ち切る
+      }
+      if (condition) //もし真なら
+        break; //打ち切る（次の文を実行する）
+      //偽の場合の処理はREMと同じ
+
+    case I_REM: //REMの場合
+      while (*cip != I_EOL) //I_EOLに達するまで繰り返す
+        cip++; //中間コードポインタを次へ進める
+      break; //打ち切る
+extern  uint16_t    sys_cnt;
+    case I_CLT: // #070 Systic=TICK()の　ゼロクリア    2024/0615
+        cip++;
+        sys_cnt = 0;
+        break;
+
+    case I_STOP: //STOPの場合
+      while (*clp) //行の終端まで繰り返す
+        clp += *clp; //行ポインタを次へ進める
+      return clp; //行ポインタを持ち帰る
+
+    //一般の文に相当する中間コードの照合と処理
+    case I_VAR: //変数の場合（LETを省略した代入文）
+      cip++; //中間コードポインタを次へ進める
+      ivar(); //代入文を実行
+      break; //打ち切る
+    case I_ARRAY: //配列の場合（LETを省略した代入文）
+      cip++; //中間コードポインタを次へ進める
+      iarray(); //代入文を実行
+      break; //打ち切る
+    case I_LET: //LETの場合
+      cip++; //中間コードポインタを次へ進める
+      ilet(); //LET文を実行
+      break; //打ち切る
+    case I_PRINT: //PRINTの場合
+      cip++; //中間コードポインタを次へ進める
+      iprint(); //PRINT文を実行
+      break; //打ち切る
+    case I_INPUT: //INPUTの場合
+      cip++; //中間コードポインタを次へ進める
+      iinput(); //INPUT文を実行
+      break; //打ち切る
+
+#ifdef _OUT_
+    case I_OUT:     // LEDの場合　#030  0204/0513
+        cip++;      //中間コードポインタを次へ進める
+        iled();      // LED文を実行
+        break;
+#endif
+#ifdef  _PROG_
+    case    I_LINK: // LINKの場合
+        cip++;      // 中間コードを次へ進める
+        ilink();    // LINK文を実行
+        break;      // 打ち切る
+#endif
+#ifdef _PROG_
+    case I_SAVE:    //中間コードがSAVEの場合
+    case I_LOAD:    //中間コードがLOADの場合
+#endif
+    case I_NEW: //中間コードがNEWの場合
+    case I_LIST: //中間コードがLISTの場合
+    case I_RUN: //中間コードがRUNの場合
+      err = ERR_COM; //エラー番号をセット
+      return NULL; //終了
+    case I_SEMI: //中間コードが「;」の場合
+      cip++; //中間コードポインタを次へ進める
+      break; //打ち切る
+    default: //以上のいずれにも該当しない場合
+      err = ERR_SYNTAX; //エラー番号をセット
+      break; //打ち切る
+    } //中間コードで分岐の末尾
+
+    if (err) //もしエラーが生じたら
+      return NULL; //終了
+  } //行末まで繰り返すの末尾
+  return clp + *clp; //次に実行するべき行のポインタを持ち帰る
+}
+
+// RUN command handler
+void irun() {
+  unsigned char* lp; //行ポインタの一時的な記憶場所
+
+  gstki = 0; //GOSUBスタックインデクスを0に初期化
+  lstki = 0; //FORスタックインデクスを0に初期化
+  clp = listbuf; //行ポインタをプログラム保存領域の先頭に設定
+
+  while (*clp) { //行ポインタが末尾を指すまで繰り返す
+    cip = clp + 3; //中間コードポインタを行番号の後ろに設定
+    lp = iexe(); //中間コードを実行して次の行の位置を得る
+    if (err) //もしエラーを生じたら
+      return; //終了
+    clp = lp; //行ポインタを次の行の位置へ移動
+  } //行ポインタが末尾を指すまで繰り返すの末尾
+}
+
+// LIST command handler
+void ilist() {
+  short lineno; //表示開始行番号
+
+  //表示開始行番号の設定
+  if (*cip == I_NUM) //もしLIST命令に引数があったら
+    lineno = getlineno(cip); //引数を読み取って表示開始行番号とする
+  else //引数がなければ
+    lineno = 0; //表示開始行番号を0とする
+
+  //行ポインタを表示開始行番号へ進める
+  for ( //次の手順で繰り返す
+    clp = listbuf; //行ポインタを先頭行へ設定
+    //末尾ではなくて表示開始行より前なら繰り返す
+    *clp && (getlineno(clp) < lineno);
+    clp += *clp); //行ポインタを次の行へ進める
+
+  //リストを表示する
+  while (*clp) { //行ポインタが末尾を指すまで繰り返す
+    putnum(getlineno(clp), 0); //行番号を表示
+    c_putch(' '); //空白を入れる
+    putlist(clp + 3); //行番号より後ろを文字列に変換して表示
+    if (err) //もしエラーが生じたら
+      break; //繰り返しを打ち切る
+    newline(); //改行
+    clp += *clp; //行ポインタを次の行へ進める
+  }
+}
+
+//NEW command handler
+void inew(void) {
+  unsigned char i; //ループカウンタ
+
+  //変数と配列の初期化
+  for (i = 0; i < 26; i++) //変数の数だけ繰り返す
+    var[i] = 0; //変数を0に初期化
+  for (i = 0; i < SIZE_ARRY; i++) //配列の数だけ繰り返す
+    arr[i] = 0; //配列を0に初期化
+
+  //実行制御用の初期化
+  gstki = 0; //GOSUBスタックインデクスを0に初期化
+  lstki = 0; //FORスタックインデクスを0に初期化
+  *listbuf = 0; //プログラム保存領域の先頭に末尾の印を置く
+  clp = listbuf; //行ポインタをプログラム保存領域の先頭に設定
+}
+#ifdef  _PROG_
+// SAVE command handler
+void    isave() {
+    unsigned    char    no; // 領域番号
+    unsigned    char    boot;   //BOOT フラグ
+    // 領域番号を取得する。
+    no = 0;     // 領域の初期値を設定
+    if (*cip == I_NUM)  {   // もし引数に定数が見つかったら
+        cip++;      // 中間コードポインタを定数の下位バイトへ移動
+        no = *cip;  // 領域番号を取得
+        cip += 2;   // 中間コードポインタを定数の次へ進める
+    }
+    if (no >= SIZE_PROM / SIZE_LIST)    { // もし　領域番号が大きすぎたなら
+        err = ERR_VOF;  // エラー番号をセット
+        return;         // 終了する
+    }
+// BOOT指定を取得する
+    boot = 0;       // BOOT指定の初期値を設定
+    if(*cip == I_BOOT)  {   // もし　引数にBOOTが見つかったら
+        if (no != 0)    {   // もし領域番号が　０でなければ
+            err = ERR_SYNTAX;   // エラー番号をセット
+            return;             // 終了する
+        }
+        cip++;  // 中間コードポインタをBOOTの次へ進める
+        boot = 0x55;    // BOOT指定を　0x55に設定
+    }
+    // 後ろに他の指示が無いことを確認
+    if (*cip != I_EOL)  { // もし　行末でなければ
+        err = ERR_SYNTAX;
+        return;
+    }
+    // プログラムをセーブする
+    listbuf[SIZE_LIST -1] = boot;   // おしりに　BOOT指定を書き込む。
+    prom_save(&listbuf[0],no);            // プログラムをセーブ
+    listbuf[SIZE_LIST-1] = 0;            // BOOT指定を戻す。
+}
+void    iload() {
+    unsigned char   no;     // 領域番号
+    // 領域番号を取得
+    no = 0;     // 領域番号の初期値を設定
+    if (*cip == I_NUM)  {   // もし引数に定数がみつかったら
+        cip++;      //中間コードポインタを定数の下位バイトへ移動
+        no = *cip;  // 領域番号を取得
+        cip +=2;    // 中間コードポインタを定数の次へ進める
+    }
+    if (no >= SIZE_PROM / SIZE_LIST)    { // もし　領域番号が大きすぎたなら
+         err = ERR_VOF;  // エラー番号をセット
+         return;         // 終了する
+    }
+    // 後ろに他の指示が無いことを確認
+    if (*cip != I_EOL)  { // もし　行末でなければ
+        err = ERR_SYNTAX;
+        return;
+    }
+    // プログラムをロードする
+    inew();     // 実行環境を初期化する。
+    prom_load(&listbuf[0],no);
+    listbuf[SIZE_LIST-1] = 0;  // BOOT指定を戻す。
+}
+#endif
+#ifdef  _PROG_
+// LINK Command handler
+void    ilink() {
+    unsigned char   no;     // 領域番号
+    // 領域番号を取得
+    no = 0;     // 領域番号の初期値を設定
+    if (*cip == I_NUM)  {   // もし引数に定数がみつかったら
+        cip++;      //中間コードポインタを定数の下位バイトへ移動
+        no = *cip;  // 領域番号を取得
+        cip +=2;    // 中間コードポインタを定数の次へ進める
+    }
+    if (no >= SIZE_PROM / SIZE_LIST)    { // もし　領域番号が大きすぎたなら
+         err = ERR_VOF;  // エラー番号をセット
+         return;         // 終了する
+    }
+    // 後ろに他の指示が無いことを確認
+    if (*cip != I_EOL && *cip != I_SEMI)  { // もし　行末が「；」でなければ
+        err = ERR_SYNTAX;
+        return;
+    }
+    prom_load(&listbuf[0], no);              // プログラムをロードする
+    listbuf[SIZE_LIST-1] = 0;  // BOOT指定を戻す。
+// 実行制御の初期化
+    gstki = 0;   // GOSUB のを０に初期化
+    lstki = 0;  // FOR　のスタックインデクスを０に初期化
+    clp=listbuf;    // 行ポインタをプログラム保存領域の先頭に設定
+    cip=clp + 3;    // 中間コードポインタを中間コードの先頭に設定
+}
+
+#endif
+
+//Command precessor
+void icom() {
+  cip = ibuf; //中間コードポインタを中間コードバッファの先頭に設定
+
+  switch (*cip) { //中間コードポインタが指し示す中間コードによって分岐
+
+  case I_NEW: //I_NEWの場合（NEW命令）
+    cip++; //中間コードポインタを次へ進める
+    if (*cip == I_EOL) //もし行末だったら
+      inew(); //NEW命令を実行
+    else //行末でなければ
+      err = ERR_SYNTAX; //エラー番号をセット
+    break; //打ち切る
+
+  case I_LIST: //I_LISTの場合（LIST命令）
+    cip++; //中間コードポインタを次へ進める
+    if (*cip == I_EOL || //もし行末か、あるいは
+      *(cip + 3) == I_EOL) //続いて引数があれば
+      ilist(); //LIST命令を実行
+    else //そうでなければ
+      err = ERR_SYNTAX; //エラー番号をセット
+    break; //打ち切る
+
+  case I_RUN: //I_RUNの場合（RUN命令）
+    cip++; //中間コードポインタを次へ進める
+    irun(); //RUN命令を実行
+    break; //打ち切る
+#ifdef _PROG_     // #060
+  case I_SAVE:
+      cip++; //中間コードポインタを次へ進める
+      isave(); //SAVE命令を実行
+      break; //打ち切る
+  case I_LOAD:
+      cip++; //中間コードポインタを次へ進める
+      iload(); //LOAD命令を実行
+      break; //打ち切る
+#endif
+
+  default: //どれにも該当しない場合
+    iexe(); //中間コードを実行
+    break; //打ち切る
+  }
+}
+
+// Print OK or error message
+void error() {
+  if (err) { //もし「OK」ではなかったら
+
+    //もしプログラムの実行中なら（cipがリストの中にあり、clpが末尾ではない場合）
+    if (cip >= listbuf && cip < listbuf + SIZE_LIST && *clp)
+    {
+      newline(); //改行
+      c_puts("LINE:"); //「LINE:」を表示
+      putnum(getlineno(clp), 0); //行番号を調べて表示
+      c_putch(' '); //空白を表示
+      putlist(clp + 3); //リストの該当行を表示
+    }
+    else //指示の実行中なら
+    {
+      newline(); //改行
+      c_puts("YOU TYPE: "); //「YOU TYPE:」を表示
+      c_puts(lbuf); //文字列バッファの内容を表示
+    }
+  } //もし「OK」ではなかったらの末尾
+
+  newline(); //改行
+  c_puts(errmsg[err]); //「OK」またはエラーメッセージを表示
+  newline(); //改行
+  err = 0; //エラー番号をクリア
+}
+/*
+ *  ｔBASICに　追加する機能です。
+ *  １．LEDの点灯    #030
+ *  2. SWの読み取り  #040
+ *
+ */
+#if 0
+#ifdef _IN_
+short getsw() {    // #040
+short i=30;
+  // i=30;
+ //   i=GPIOC->INDR; // Cポートの読み取り
+//    i &= (1<<2);
+    return (i);
+}
+#endif
+#endif
+//const  signed char
+#ifdef _OUT_        // ファイルの先頭で定義しています。
+/*
+  #030 led文の追加をする。  書式   LED <LED番号> OFF|ON      2024/0513
+
+  #032  Dip8に合わせたポートの設定を行う。     2024/0524
+     ピン番号と内容 1=PD6/URX  2=Vss 3=PA2 4=Vdd 5=PC1 6=PC2 7=PC4  8=PD5/UTX
+ */
+//#define _LED_      // LED文を有効とするシンボルの定義、　LED文を不要な場合は　先頭に // をつければ良い。　#030
+//const signed char   leds[] = {13,-1};    // LED番号の登録
+const signed char   leds[] = {1,3,5,6,7,8,-1};    // Dip8
+// const signed char   leds[] = {14,-1};    // PC4=14 LED番号の登録 20pinの場合の足の番号です。8pinでは７になります
+iled(){         // #030
+    short   no; // LED番号
+    unsigned char   i;
+    unsigned char   invalid;
+   // LED番号を取得して有効性を確認する。
+    no=iexp();  // LEDの次に来る　LED番号を取得する。
+    if(err)     // もし　なければ　終了する。
+        return;
+
+    invalid = 1;    // LED無効フラグをセット
+    for(i = 0; leds[i] != -1; i++)  // LEDの数だけ繰り返す
+        if(leds[i] == no)   {       //　LED番号が登録されていたら
+            invalid = 0;            // LED無効フラグをクリア
+            break;                  // 打ち切る
+        }
+    if(invalid) {
+        err = ERR_SYNTAX;  // エラー番号をセットシて終了
+        return;
+    }
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+//#if 0
+    switch (no) {
+    case 1: // PD6/URX
+        ;
+//#if 0
+        GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_6;    // SETING PD6
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOD, GPIO_Pin_6, Bit_SET);
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+                GPIO_WriteBit(GPIOD, GPIO_Pin_6, Bit_RESET);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+
+//#endif
+    case 3: //PA2
+        ;
+ //       GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;    // SETING PA2
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOA, &GPIO_InitStructure);
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOA, GPIO_Pin_2, Bit_SET);
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+                GPIO_WriteBit(GPIOA, GPIO_Pin_2, Bit_RESET);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+//#endif
+    case 5: // PC1
+        ;
+  //      GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+ //       RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1;    // SETING PC1
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOC, &GPIO_InitStructure);
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOC, GPIO_Pin_1, Bit_SET);
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+                GPIO_WriteBit(GPIOC, GPIO_Pin_1, Bit_RESET);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+
+    case 6: // PC2
+        ;
+ //       GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+ //       RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;    // SETING PC4
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOC, GPIO_Pin_2, Bit_SET);
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+                GPIO_WriteBit(GPIOC, GPIO_Pin_2, Bit_RESET);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+
+    case 7: // PC4
+        ;
+// #if 0
+ //       GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+//        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+    //    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4|GPIO_Pin_2;    // SETING PC4 & PC2
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;    // SETING PC4
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOC, &GPIO_InitStructure);
+// #endif
+#if 0
+// PC4 is OUTPORT #032
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+        GPIOC->CFGLR &= 0xfff0ffff; // PC4 set OUT_PP
+#endif
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_SET);    // 13976Byte
+//                GPIOD->OUTDR |=(1<<4);    13988Byte
+//                GPIOD->BSHR = (1<<4);     13980Byte
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+               GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_RESET);
+  //              GPIOD->OUTDR &=~(1<<4);
+  //              GPIOD->BSHR = (1 << 20);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+
+    case 8: //PD5/UTX/SWDIO
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
+        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_5;    // SETING PD5
+        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+        GPIO_Init(GPIOD, &GPIO_InitStructure);
+        switch (*cip)   {
+            case I_HIGH:    // #31 I_ON-->I_HIGH
+                cip++;
+                GPIO_WriteBit(GPIOD, GPIO_Pin_5, Bit_SET);
+                break;
+            case I_LOW:     // #31  I_OFF-->I_LOW
+                cip++;
+               GPIO_WriteBit(GPIOD, GPIO_Pin_5, Bit_RESET);
+                break;
+            default:    // 以上のいずれかに該当しなければ
+                err = ERR_SYNTAX;   // エラー番号をセットシて終了
+                return;
+        }
+        break;
+
+    default:
+        err = ERR_SYNTAX;   // エラー番号をセットシて終了
+        return;
+    }
+#if 0
+    //  OUT PC4
+//    GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+//    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4|GPIO_Pin_2;    // SETING PC4 & PC2
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;    // SETING PC4
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+
+    switch (*cip)   {
+        case I_HIGH:    // #31 I_ON-->I_HIGH
+            cip++;
+            GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_SET);
+            break;
+        case I_LOW:     // #31  I_OFF-->I_LOW
+            cip++;
+            GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_RESET);
+            break;
+        default:    // 以上のいずれかに該当しなければ
+            err = ERR_SYNTAX;   // エラー番号をセットシて終了
+            return;
+    }
+#endif
+}
+#endif
+//
+#ifdef _SW_        // ファイルの先頭で定義しています。
+#if 0
+/*
+  #040 sw文の追加をする。  ledから　コピペしました　書式    A = sw <LED番号>      2024/0515
+ */
+const signed char   sws[] = {11,12,-1};    // PC1=12,PC2=12 LED番号の登録 20pinの場合の足の番号です。8pinでは?になります
+isw()   {         // #040
+    short   no; // LED番号
+    unsigned char   i;
+    unsigned char   invalid;
+   // sw番号を取得して有効性を確認する。
+    no=iexp();  // SWの次に来る　swのピン番号を取得する。
+    if(err)     // もし　なければ　終了する。
+        return;
+
+    invalid = 1;    // SW無効フラグをセット
+    for(i = 0; sws[i] != -1; i++)  // SWの数だけ繰り返す
+        if(sws[i] == no)   {       //　SW番号が登録されていたら
+            invalid = 0;            // SW無効フラグをクリア
+            break;                  // 打ち切る
+        }
+    if(invalid) {
+        err = ERR_SYNTAX;  // エラー番号をセットシて終了
+        return;
+    }
+#if 0
+    //  OUT PC4
+    GPIO_InitTypeDef GPIO_InitStructure = {0};  //　GPIO設定用構造体
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+//    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4|GPIO_Pin_2;    // SETING PC4 & PC2
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4;    // SETING PC4
+    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(GPIOC, &GPIO_InitStructure);
+#endif
+    switch ( no)   {
+        case 11:
+            cip++;
+  //          GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_SET);
+            break;
+        case 12:
+            cip++;
+   //         GPIO_WriteBit(GPIOC, GPIO_Pin_4, Bit_RESET);
+            break;
+        default:    // 以上のいずれかに該当しなければ
+            err = ERR_SYNTAX;   // エラー番号をセットシて終了
+            break;
+    }
+//    sw_value=no;
+    return;
+}
+#endif
+#endif
+
+//      ADCの値を読み取る。ADC文に対応する　関数 iadc 2024/0515-  #050
+/*
+ * PA2 の　アナログ入力の　ヒント　「汎用入出力【STM32のGPIO使い方詳細 】」より　2024/0525
+ * 設定例： オルタネート機能を使用する場合
+ * オルタネート機能を使用する場合はクロックを供給してオルタネート機能をONする必要があります。
+ *
+　RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+ */
+
+
+#ifdef _ADC_
+const signed char   adcs[] = {6, -1}; // ADC番号の定義参照
+short   iadc()  {
+short no;                   // ADC 番号
+unsigned char   i;          // ループカウンタ
+unsigned char   invalid;    // ADC 無効フラグ
+short   adc_data;
+// ADC番号を取得して有効性を確認する。
+    no = iexp();    // ADC番号を取得する。
+    if (err)        // もし　エラーが生じたら　終了する。
+        return;
+
+    invalid = 1;
+    for(i = 0; adcs[i] != -1; i++)
+        if (adcs[i] == no) {
+            invalid = 0;
+            break;
+        }
+    if (invalid) {
+        err = ERR_SYNTAX;
+        return;
+    }
+    switch (no) {
+    case 6:
+        cip++;
+        adc_data=Get_ADC_Val( 0);
+        break;
+    default:
+        err = ERR_SYNTAX;
+        return;
+    }
+    return (adc_data);
+}
+#endif
+
+/*
+  TOYOSHIKI Tiny BASIC
+  The BASIC entry point
+*/
+
+void basic() {
+  unsigned char len; //中間コードの長さ
+
+  inew(); //実行環境を初期化
+
+#ifdef  _PROG_
+  // パワーーオンラン　もし　BOOT付きなら　（RUN)実行する #060
+  if( prom_boot() == 0x55)  {   // もし　BOOT指定が 0x55なら
+      prom_load(&listbuf[0], 0);              // 領域番号０をロード
+      listbuf[SIZE_LIST - 1] = 0;   // BOOT指定を戻す。
+      irun();   // 実行する。
+  }
+#endif
+  //起動メッセージ
+  c_puts("TOYOSHIKI TINY BASIC"); //「TOYOSHIKI TINY BASIC」を表示
+  newline(); //改行
+  c_puts(STR_EDITION); //版を区別する文字列を表示
+  c_puts(" EDITION"); //「 EDITION」を表示
+  newline(); //改行
+  error(); //「OK」またはエラーメッセージを表示してエラー番号をクリア
+// #020 RAND()
+//extern unsigned short   seed_val;
+//  srand(seed_val);
+//  srand(870);     // #020
+//  seed_set();
+  //端末から1行を入力して実行
+  while (1) { //無限ループ
+    c_putch('>'); //プロンプトを表示
+    c_gets(); //1行を入力
+
+    //1行の文字列を中間コードの並びに変換
+    len = toktoi(); //文字列を中間コードに変換して長さを取得
+    if (err) { //もしエラーが発生したら
+      error(); //エラーメッセージを表示してエラー番号をクリア
+      continue; //繰り返しの先頭へ戻ってやり直し
+    }
+
+    //中間コードの並びがプログラムと判断される場合
+    if (*ibuf == I_NUM) { //もし中間コードバッファの先頭が行番号なら
+      *ibuf = len; //中間コードバッファの先頭を長さに書き換える
+      inslist(); //中間コードの1行をリストへ挿入
+      if (err) //もしエラーが発生したら
+        error(); //エラーメッセージを表示してエラー番号をクリア
+      continue; //繰り返しの先頭へ戻ってやり直し
+    }
+
+    //中間コードの並びが命令と判断される場合
+    icom(); //実行する
+    error(); //エラーメッセージを表示してエラー番号をクリア
+
+  } //無限ループの末尾
+}
+// #endif
