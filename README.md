@@ -8,4 +8,6 @@ Packages include QFN-20, TSSOP-20, SOP-8.
 <br>
 
 Also import the Toyoshiki's TTBasic with ASCIIchart.bas example into the 16KB core... <br>
+See software folder for all PlatformIO projects. <br>
 <img src="pic/TTBASIC_ASCII_V003.jpg">
+<br>
