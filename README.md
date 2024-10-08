@@ -1,4 +1,5 @@
-### mBusWCH32V00x
+# mBusWCH32V00x
 
 
-mBusWch32v00x_1008.jpg
+
+<img src="pic/mBusWch32v00x_1008.jpg" width="48%">
