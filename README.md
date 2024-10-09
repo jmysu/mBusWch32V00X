@@ -17,6 +17,7 @@ See software folder for all PlatformIO projects. <br>
 References:
 -----
 [CH32V00x Pinout/Ch32v003fun References](https://github.com/cnlohr/ch32v003fun) cnlohr github repository <br>
+[RV003USB](https://github.com/cnlohr/rv003usb) Using USB on the CH32V003 <br>
 [WCH Boards](https://github.com/wagiminator/Development-Boards) wagiminator Wch dev boards <br>
 
 
