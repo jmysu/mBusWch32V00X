@@ -12,3 +12,8 @@ Also import the Toyoshiki's TTBasic with ASCIIchart.bas example into the 16KB fl
 See software folder for all PlatformIO projects. <br>
 <img src="pic/TTBASIC_ASCII_V003.jpg">
 <br>
+<br>
+
+Reference:
+-----
+[CH32V00x Pinout References](https://github.com/cnlohr/ch32v003fun)
