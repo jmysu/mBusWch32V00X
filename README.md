@@ -5,7 +5,7 @@
 Packages include QFN-20, TSSOP-20, SOP-8, board schematic & PCB exported to KiCAD8 in hardware folder.
 
 
-<img src="pic/mBusWch32v00x_1008.jpg" width="48%"> <br> <img src="pic/mBusWch32V00X1.jpg" width="48%"><br>
+<img src="pic/mBusWch32v00x_1008.jpg" width="48%"> <img src="pic/mBusWch32V00X1.jpg" width="48%"><br>
 <br>
 
 Also import the Toyoshiki's TTBasic with ASCIIchart.bas example into the 16KB flash... <br>
