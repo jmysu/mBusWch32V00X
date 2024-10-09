@@ -16,7 +16,7 @@ See software folder for all PlatformIO projects. <br>
 
 References:
 -----
-[V003 Intro.](https://ch405-labs.com/ch32v003_intro/) CH32V003 introduction <br>
+[V003 Intro.](https://ch405-labs.com/ch32v003_intro/) CH32V003 introduction about programming the CH32V003 RISC-V microcontroller <br>
 [CH32V00x Pinout/Ch32v003fun References](https://github.com/cnlohr/ch32v003fun) cnlohr github repository <br>
 [RV003USB](https://github.com/cnlohr/rv003usb) Using USB on the CH32V003 <br>
 [WCH Boards](https://github.com/wagiminator/Development-Boards) wagiminator Wch dev boards <br>
