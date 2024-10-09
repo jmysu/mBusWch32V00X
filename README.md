@@ -19,6 +19,7 @@ References:
 [CH32V00x Pinout/Ch32v003fun References](https://github.com/cnlohr/ch32v003fun) cnlohr github repository <br>
 [RV003USB](https://github.com/cnlohr/rv003usb) Using USB on the CH32V003 <br>
 [WCH Boards](https://github.com/wagiminator/Development-Boards) wagiminator Wch dev boards <br>
+[V003 Neopixel](https://github.com/wagiminator/CH32V003-NeoPixel-Pendant) TinyBling - Sparkly NeoPixel Pendant based on CH32V003 <br>
 [CH32V003 UART](https://pallavaggarwal.in/2023/09/23/ch32v003-programming-uart/) CH32V003 UART RX/TX remap <br>
 
 
