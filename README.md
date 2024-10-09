@@ -16,4 +16,7 @@ See software folder for all PlatformIO projects. <br>
 
 Reference:
 -----
-[CH32V00x Pinout References](https://github.com/cnlohr/ch32v003fun)
+[CH32V00x Pinout/ch32v003fun References](https://github.com/cnlohr/ch32v003fun) cnlohr github repository
+
+
+<br>
