@@ -5,8 +5,8 @@
 Packages include QFN-20, TSSOP-20, SOP-8, board schematic & PCB exported to KiCAD8 in hardware folder.
 
 
-<img src="pic/mBusWch32v00x_1008.jpg" width="66%"> <br>
-<img src="pic/mBusWch32V00X1.jpg" width="66%"> <img src="pic/mbusCH32V003.gif" width="30%"><br>
+<img src="pic/mBusWch32v00x_1008.jpg" width="60%"> <br>
+<img src="pic/mBusWch32V00X1.jpg" width="60%"> <img src="pic/mbusCH32V003.gif" width="33%"><br>
 
 Also import the Toyoshiki's TTBasic with ASCIIchart.bas example into the 16KB flash... <br>
 See software folder for all PlatformIO projects. <br>
