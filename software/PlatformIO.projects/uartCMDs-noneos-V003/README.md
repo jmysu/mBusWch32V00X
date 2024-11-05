@@ -23,6 +23,6 @@ $ pio run -e ch32v307_evt --target upload
 $ pio run --target clean
 ```
 uartCMDs i2c OLED<br>
-<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/PXL_20241105_OLED.jpg" width="50%"> <br>
+<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/PXL_20241105_OLED.jpg" width="33%"> <br>
 uartCMDs Commander w/ i2c scan... <br>
-<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/uartCMDSV1.1.jpg" width="50%"> <br>
+<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/uartCMDSV1.1.jpg" width="65%"> <br>
