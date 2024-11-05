@@ -32,10 +32,10 @@
 //ENABLE I2C SLAVE code:13428-13180 248   =1.4%
 //#define _ENABLE_I2C_SLAVE 
 //ENABLE OLED code:13616-12568     1048   =6.4%
-#define _ENABLE_OLED
+//#define _ENABLE_OLED
 //ENABLE SDFS  code:15504-13080    2424   =14.8%
 //#define _ENABLE_SDFS 
 //ENABLE EE  code:16152-13616      2536   =15.5%
-//#define _ENABLE_EE
+#define _ENABLE_EE
 
 #endif
