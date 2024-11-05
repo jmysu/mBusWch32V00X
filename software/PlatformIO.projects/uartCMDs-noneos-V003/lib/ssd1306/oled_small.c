@@ -287,11 +287,11 @@ void OLED_plotRobot(uint8_t x, uint8_t y, char* s) {
   char *string = "0123456789:.";
   char *e;
   int idx;
-printf("s=%s\n",s);
+//printf("s=%s\n",s);
   while (*s!=NULL) {
     e = strchr(string, *s);
     idx = (int)(e - string);
-    printf("%c idx:%d\n", *s, idx);
+    //printf("%c idx:%d\n", *s, idx);
     OLED_DrawBitmap(x,y, fontRobotWidth[idx], 24, fontRobotAddr[idx], 0);
     x+= fontRobotWidth[idx];
     ++s;
