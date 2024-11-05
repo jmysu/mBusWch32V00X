@@ -22,4 +22,4 @@ $ pio run -e ch32v307_evt --target upload
 # Clean build files
 $ pio run --target clean
 ```
-<src img="pic/PXL_20241105_OLED.jpg">
+<img src="pic/PXL_20241105_OLED.jpg">
