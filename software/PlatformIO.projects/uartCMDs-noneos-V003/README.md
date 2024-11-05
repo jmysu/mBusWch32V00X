@@ -30,4 +30,4 @@ uartCMDs Commander V1.1 w/ i2c scan... <br>
 <img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/uartCMDSV1.1.jpg" width="50%"> <br>
 
 uartCMDs Commander V1.1 w/ enabled modules <br>
-<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/uartCMDSV1.1_modules.jpg" width="50%"> <br>
+<img src="https://github.com/jmysu/mBusWch32V00X/blob/main/pic/uartCMDsV1.1_modules.jpg" width="65%"> <br>
