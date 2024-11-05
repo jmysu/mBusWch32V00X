@@ -1,8 +1,8 @@
 #include <ch32v00x.h>
 #include <stdbool.h>
 
-bool isTimer2=0;
-
+extern bool _isTimer2;
+extern uint32_t _tmr2millis;
 /**
  * The function initializes the TIM2 timer with the specified period and prescaler, enables the TIM2
  * update interrupt, configures the NVIC interrupt settings, and enables the TIM2 timer.
@@ -47,7 +47,8 @@ void TIM2_IRQHandler(void)
     if (TIM_GetITStatus(TIM2, TIM_IT_Update) == SET)
     {
         // this can be replaced with your code of flag so that in main's that flag can be handled 
-        isTimer2 = true;
+        _isTimer2 = true;
+        _tmr2millis++;
         TIM_ClearITPendingBit(TIM2, TIM_IT_Update); // 
     }
 }

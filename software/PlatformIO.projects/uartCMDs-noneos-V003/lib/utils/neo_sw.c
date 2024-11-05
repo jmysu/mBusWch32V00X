@@ -8,11 +8,16 @@
 // 2023 by Stefan Wagner:   https://github.com/wagiminator
 
 #include "neo_sw.h"
-
+#include "_main.h"
+#ifdef _ENABLE_NEO
 // ===================================================================================
 // Neopixel Parameters and Variables
 // ===================================================================================
-
+ 
+uint8_t neo_c = 0;
+// 6805-EC15 R/G/B mcd : 2/4/1
+uint8_t myNeo[6][3] = {{8, 0, 0}, {0, 4, 0}, {0, 0, 16}, {0, 2, 8}, {4, 0, 8}, {4, 2, 0}};
+ 
 // Define protocol delays depending on system frequency (F_CPU)
 // There are three essential conditions:
 // - T0H (HIGH-time for "0"-bit) must be max.  500ns
@@ -153,3 +158,4 @@ void NEO_writeHue(uint8_t pixel, uint8_t hue, uint8_t bright) {
 void NEO_clearPixel(uint8_t pixel) {
   NEO_writeColor(pixel, 0, 0, 0);
 }
+#endif

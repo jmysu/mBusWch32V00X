@@ -58,33 +58,59 @@ void TIM1CH4_PWMOut_Init(u16 arr, u16 psc, u16 ccp) {
     TIM_Cmd( TIM1, ENABLE);
 }
 
-void initC3C4(void) {
+void initC3C4D0(void) {
 
     GPIO_InitTypeDef GPIO_InitStructure = { 0 };
 
-    //RCC_APB2PeriphClockCmd( RCC_APB2Periph_GPIOD | RCC_APB2Periph_TIM1, ENABLE);
     RCC_APB2PeriphClockCmd( RCC_APB2Periph_GPIOC | RCC_APB2Periph_TIM1, ENABLE);
-
-    //GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2;
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4 | GPIO_Pin_4;
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_3 | GPIO_Pin_4;
     GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    //GPIO_Init( GPIOD, &GPIO_InitStructure);
+    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_10MHz;
     GPIO_Init( GPIOC, &GPIO_InitStructure);
-}
 
-void tone(uint16_t freq) {
-
-    uint16_t duration;
-
-    duration = 1000000 / freq;   // in usec
-
-    TIM1CH4_PWMOut_Init(duration, 48, duration / 2);
-
+    RCC_APB2PeriphClockCmd( RCC_APB2Periph_GPIOD | RCC_APB2Periph_TIM1, ENABLE);
+    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+    GPIO_Init( GPIOD, &GPIO_InitStructure);
 }
 
 void notone(void) {
     TIM_Cmd(TIM1, DISABLE);
+}
+
+void tone(uint16_t freq) {
+    uint32_t duration;
+    if (freq>0) {
+        notone();
+        duration = 1000000 / freq;  
+        TIM1CH4_PWMOut_Init( duration, 48, duration>>1);
+        }
+    else
+        notone();
+}
+
+void toneUs(uint16_t freq, uint32_t us) {
+    uint32_t duration;
+    if (freq>0) {
+        notone();
+        duration = 1000000 / freq;   
+        TIM1CH4_PWMOut_Init(duration, 48, duration >>1);
+        }
+    else
+        notone();
+    Delay_Us(us);
+    notone();
+}
+void toneMs(uint16_t freq, uint16_t ms) {
+    uint32_t duration;
+    if (freq>0) {
+        notone();
+        duration = 1000000 / freq;   
+        TIM1CH4_PWMOut_Init(duration, 48, duration >>1);
+        }
+    else
+        notone();
+    Delay_Ms(ms);
+    notone();
 }
 
 /*********************************************************************
